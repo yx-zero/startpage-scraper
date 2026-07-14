@@ -54,10 +54,28 @@ func fetchSC(client *http.Client) (string, error) {
 
 	body, _ := io.ReadAll(resp.Body)
 
-	sp1 := strings.Split(string(body), `<input type="hidden" name="sc" value="`)
-	sp2 := strings.Split(sp1[1], `"/>`)
+	sc := extractSC(string(body))
+	if sc == "" {
+		return "", fmt.Errorf("could not find sc token on homepage")
+	}
 
-	return sp2[0], nil
+	return sc, nil
+}
+
+// extractSC pulls the hidden "sc" session token out of a Startpage HTML page.
+// Returns an empty string when the token is absent.
+func extractSC(body string) string {
+	const marker = `<input type="hidden" name="sc" value="`
+	i := strings.Index(body, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := body[i+len(marker):]
+	end := strings.Index(rest, `"`)
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
 }
 
 func FetchSearchQuery(query string, pages int, client *http.Client) (*SearchResults, error) {
@@ -81,9 +99,23 @@ func FetchSearchQuery(query string, pages int, client *http.Client) (*SearchResu
 		return nil, err
 	}
 
-	sr, newsc, err := handleExtraCaptcha(string(bodyText), query, client)
-	if err != nil {
-		return nil, err
+	var sr []*SearchResult
+	var newsc string
+
+	// Startpage may serve an intermediate challenge page (containing a
+	// "var data = {...}" blob) before returning results, or it may return the
+	// results directly. Only run the challenge round-trip when the blob exists.
+	if strings.Contains(string(bodyText), "var data =") {
+		sr, newsc, err = handleExtraCaptcha(string(bodyText), query, client)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		sr, err = parseStartpageHTML(string(bodyText))
+		if err != nil {
+			return nil, err
+		}
+		newsc = extractSC(string(bodyText))
 	}
 
 	srs := [][]*SearchResult{}
@@ -142,10 +174,7 @@ func handleExtraCaptcha(bodystr, query string, client *http.Client) ([]*SearchRe
 		return nil, "", err
 	}
 
-	sp1 := strings.Split(string(body), `<input type="hidden" name="sc" value="`)
-	sp2 := strings.Split(sp1[1], `"/>`)
-
-	sc := sp2[0]
+	sc := extractSC(string(body))
 
 	return results, sc, nil
 }
